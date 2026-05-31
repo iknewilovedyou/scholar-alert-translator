@@ -1,0 +1,85 @@
+% Fixed PDF visual style for scholar-alert-translator.
+% Version: math-paper-v2
+% Purpose: Clean bilingual academic digest with paper cards, navy accent, and page header.
+
+% ── Colors ──
+\usepackage{xcolor}
+\definecolor{Accent}{HTML}{1a5276}       % deep navy blue for headings
+\definecolor{AccentLight}{HTML}{d4e6f1}  % light blue accent
+\definecolor{Label}{HTML}{5d6d7e}        % metadata label color
+\definecolor{BodyText}{HTML}{2c3e50}     % slightly softer than pure black
+\definecolor{RuleColor}{HTML}{bdc3c7}    % subtle horizontal rule
+\definecolor{CardBg}{HTML}{f8f9fa}       % very light gray card background
+\definecolor{CardBorder}{HTML}{dee2e6}   % card border
+
+% Always use a plain white page. Do not switch themes.
+\pagecolor{white}
+\color{BodyText}
+
+% ── Typography ──
+\usepackage{setspace}
+\setstretch{1.12}
+\setlength{\parindent}{1.8em}
+\setlength{\parskip}{0.25em plus 0.06em minus 0.03em}
+\emergencystretch=3em
+\clubpenalty=10000
+\widowpenalty=10000
+\displaywidowpenalty=10000
+
+% Better line breaks for bilingual academic PDFs.
+\XeTeXlinebreaklocale "zh"
+\XeTeXlinebreakskip = 0pt plus 1pt
+
+% ── Paper cards via tcolorbox ──
+\usepackage[most]{tcolorbox}
+\newtcolorbox{papercard}{
+  colback=CardBg,
+  colframe=CardBorder,
+  boxrule=0.4pt,
+  arc=3pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  before skip=14pt,
+  after skip=10pt,
+  breakable,
+  enhanced,
+  drop fuzzy shadow=black!4,
+  borderline west={2pt}{0pt}{AccentLight},
+}
+
+% ── Headings ──
+\usepackage{titlesec}
+% Section = document title
+\titleformat{\section}{\Large\bfseries\color{Accent}}{}{0em}{}
+\titlespacing*{\section}{0pt}{0pt}{0.6em}
+% Subsection = paper title (clickable)
+\titleformat{\subsection}{\large\bfseries\color{Accent}}{}{0em}{}
+\titlespacing*{\subsection}{0pt}{0.4em}{0.2em}
+% Subsubsection = abstract labels
+\titleformat{\subsubsection}{\normalsize\bfseries\color{Label}}{}{0em}{}
+\titlespacing*{\subsubsection}{0pt}{0.55em}{0.15em}
+
+% ── Lists ──
+\usepackage{enumitem}
+\setlist{nosep,leftmargin=1.8em,itemsep=0.10em,topsep=0.15em}
+
+% ── Page header & footer ──
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{Label}\textit{Google Scholar Alert}}
+\fancyhead[R]{\small\color{Label}\today}
+\renewcommand{\headrulewidth}{0.3pt}
+\renewcommand{\footrulewidth}{0pt}
+\fancyfoot[C]{\small\color{Label}\thepage}
+
+% ── Links (colored to match accent, subtle) ──
+\AtBeginDocument{%
+  \urlstyle{same}%
+  \hypersetup{%
+    colorlinks=true,%
+    linkcolor=Accent,%
+    urlcolor=Accent,%
+    citecolor=Accent,%
+    pdfborder={0 0 0}%
+  }%
+}

@@ -1,0 +1,28 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Runtime cache and generated outputs
+.cache/
+output/
+cron.log
+*.log
+papers_raw.json
+papers_translated.json
+scholar_alert_output.md
+scholar_alert_output.pdf
+
+# Python local artifacts
+__pycache__/
+*.py[cod]
+.python-version
+.venv/
+venv/
+env/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
