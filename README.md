@@ -37,6 +37,8 @@ scholar-alert-translator/
    - `EMAIL_ADDRESS`
    - `EMAIL_APP_PASSWORD`
    - `IMAP_SERVER`
+   - `IMAP_LABEL`：可用逗号分隔多个文件夹，例如 `谷歌学术,scopus,SIAM,Turing pattern`
+   - `ALERT_SENDERS`：默认只处理 `scholaralerts-noreply@google.com`、`service@siam.org`、`scopus@notification.elsevier.com`
    - 邮箱里需要能收到 Google Scholar Alert 邮件
    - 对 163、QQ、Gmail 等邮箱，通常要先开启 IMAP，并使用“授权码/应用专用密码”，不要直接填网页登录密码
 
@@ -89,6 +91,8 @@ bash install.sh
 ```bash
 python3 scripts/fetch-scholar-alerts.py --since-days 7
 ```
+
+如果使用 163/126/yeah 邮箱，脚本会跳过不可靠的 IMAP `FROM` 搜索，改为按日期取候选邮件，再在本地解析真实 `From` 地址，只保留 `ALERT_SENDERS` 中的发件人。候选扫描上限由 `MAX_SCAN_EMAILS` 或 `--max-scan-emails` 控制。
 
 只抓取和补全，保存 JSON 后停止，不翻译、不生成 Markdown/PDF：
 

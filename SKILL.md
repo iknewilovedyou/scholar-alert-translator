@@ -110,6 +110,10 @@ PDF 生成后必须主动交付给用户：
 EMAIL_ADDRESS=xxx@163.com
 EMAIL_APP_PASSWORD=xxx
 IMAP_SERVER=imap.163.com
+IMAP_LABEL=谷歌学术,scopus,SIAM,Turing pattern
+MAX_EMAILS=10
+MAX_SCAN_EMAILS=500
+ALERT_SENDERS=scholaralerts-noreply@google.com,service@siam.org,scopus@notification.elsevier.com
 
 # 翻译 API（TRANSLATE_PROVIDER=openai 或 ark）
 TRANSLATE_PROVIDER=openai
@@ -124,3 +128,5 @@ OPENAI_MODEL=Qwen/Qwen2.5-7B-Instruct
 # 可选：run.sh 完成后的文件发送命令
 # SEND_FILE_CMD='openclaw send-file "$DELIVER_FILE"'
 ```
+
+163/126/yeah.net 的 IMAP `FROM` 搜索可能只匹配显示名、不匹配真实邮箱地址。脚本检测到这类服务器后，会使用 `SINCE` 搜候选邮件，再在本地解析 `From` 头，只保留 `ALERT_SENDERS` 中的发件人。为避免超大文件夹扫描过慢，用 `MAX_SCAN_EMAILS` 控制每个文件夹最多检查多少封候选邮件。

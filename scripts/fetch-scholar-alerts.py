@@ -7,6 +7,7 @@ Pipeline: JSON → Markdown → PDF (pandoc+XeLaTeX, NO ReportLab)
 import argparse, email, imaplib, json, logging, os, re, shutil, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
+from email.utils import parseaddr
 from html.parser import HTMLParser
 from urllib.parse import unquote, urlparse, parse_qs
 
@@ -25,6 +26,11 @@ FIXED_TEMPLATE_VERSION = "fixed-bilingual-v4-math-paper"
 FIXED_PDF_STYLE_VERSION = "math-paper-v2"
 BAD_GLYPHS = ("■", "□", "�")
 TRANSLATION_FAILURE_PREFIXES = ("[翻译失败]", "[翻译不可用]")
+DEFAULT_ALERT_SENDERS = (
+    "scholaralerts-noreply@google.com",
+    "service@siam.org",
+    "scopus@notification.elsevier.com",
+)
 
 # ═══════════════════════════════════════════════════════════════
 # 0. ENVIRONMENT CHECK — runs at startup, reports missing deps
@@ -223,7 +229,44 @@ def _imap_connect(imap_server, email_addr, app_password):
     return mail
 
 
-def _fetch_from_folder(mail, label, since_date, max_emails=10, unseen_only=True):
+def _is_163_like_imap(imap_server):
+    server = (imap_server or "").lower()
+    return any(domain in server for domain in ("163.com", "126.com", "yeah.net"))
+
+
+def _target_alert_senders():
+    raw = os.environ.get("ALERT_SENDERS", "").strip()
+    if not raw:
+        return DEFAULT_ALERT_SENDERS
+    senders = [s.strip().lower() for s in raw.split(",") if s.strip()]
+    return tuple(senders) if senders else DEFAULT_ALERT_SENDERS
+
+
+def _from_address_from_raw(raw_email):
+    try:
+        msg = email.message_from_bytes(raw_email)
+        return parseaddr(msg.get("From", ""))[1].lower()
+    except Exception:
+        return ""
+
+
+def _fetch_raw_message(mail, mid):
+    """Fetch a raw message without marking it as read."""
+    _, data = mail.fetch(mid, "(BODY.PEEK[])")
+    for part in data:
+        if isinstance(part, tuple):
+            return part[1]
+    return None
+
+
+def _mark_seen(mail, mid):
+    try:
+        mail.store(mid, "+FLAGS.SILENT", "(\\Seen)")
+    except Exception as e:
+        logger.debug(f"Could not mark message {mid!r} as seen: {e}")
+
+
+def _fetch_from_folder(mail, label, since_date, max_emails=10, unseen_only=True, imap_server=None, max_scan_emails=500, target_senders=None):
     """Fetch raw emails from one IMAP folder. Returns list of raw bytes.
 
     With unseen_only=True (default), only unread emails are fetched and they
@@ -256,15 +299,21 @@ def _fetch_from_folder(mail, label, since_date, max_emails=10, unseen_only=True)
     except Exception:
         pass
 
+    target_senders = tuple(s.lower() for s in (target_senders or ()))
+    use_local_from_filter = bool(target_senders)
     unseen_prefix = "UNSEEN " if unseen_only else ""
-    search_strategies = [
-        '(' + unseen_prefix + 'FROM "scholaralerts-noreply@google.com" SINCE ' + since_date + ')',
-        '(' + unseen_prefix + 'FROM "scopus@notification.elsevier.com" SINCE ' + since_date + ')',
-        '(' + unseen_prefix + 'FROM "service@siam.org" SINCE ' + since_date + ')',
-        '(' + unseen_prefix + 'FROM "scholaralerts" SINCE ' + since_date + ')',
-        '(' + unseen_prefix + 'SUBJECT "scholar" SINCE ' + since_date + ')',
-        '(' + unseen_prefix + 'SINCE ' + since_date + ')',
-    ]
+    if _is_163_like_imap(imap_server):
+        logger.info(f"  [{label}] 163/126/yeah IMAP detected; using SINCE search + local From filtering")
+        search_strategies = ['(' + unseen_prefix + 'SINCE ' + since_date + ')']
+    else:
+        search_strategies = [
+            '(' + unseen_prefix + 'FROM "scholaralerts-noreply@google.com" SINCE ' + since_date + ')',
+            '(' + unseen_prefix + 'FROM "scopus@notification.elsevier.com" SINCE ' + since_date + ')',
+            '(' + unseen_prefix + 'FROM "service@siam.org" SINCE ' + since_date + ')',
+            '(' + unseen_prefix + 'FROM "scholaralerts" SINCE ' + since_date + ')',
+            '(' + unseen_prefix + 'SUBJECT "scholar" SINCE ' + since_date + ')',
+            '(' + unseen_prefix + 'SINCE ' + since_date + ')',
+        ]
     msg_ids = [b""]
     for strategy in search_strategies:
         try:
@@ -280,24 +329,40 @@ def _fetch_from_folder(mail, label, since_date, max_emails=10, unseen_only=True)
         logger.info(f"  [{label}] no emails found")
         return []
 
-    all_ids = msg_ids[0].split()
-    if len(all_ids) > max_emails:
-        logger.warning(f"  [{label}] 匹配 {len(all_ids)} 封，超过上限 {max_emails}，只取前 {max_emails} 封")
-        logger.warning(f"  [{label}] 用 --max-emails 调大上限，或 --since-days 缩小范围")
-        all_ids = all_ids[:max_emails]
+    # IMAP SEARCH usually returns oldest first. Scan newest first so folders with
+    # years of unread alerts do not starve today's messages.
+    all_ids = list(reversed(msg_ids[0].split()))
+    scan_limit = max_scan_emails if use_local_from_filter else max_emails
+    if len(all_ids) > scan_limit:
+        logger.warning(f"  [{label}] 匹配 {len(all_ids)} 封，只扫描最新 {scan_limit} 封")
+        logger.warning(f"  [{label}] 可用 --max-scan-emails 调大扫描上限，或 --since-days 缩小范围")
+        all_ids = all_ids[:scan_limit]
 
     raw_emails = []
+    skipped_sender = 0
     for mid in all_ids:
-        _, data = mail.fetch(mid, "(RFC822)")
-        for part in data:
-            if isinstance(part, tuple):
-                raw_emails.append(part[1])
-    logger.info(f"  [{label}] fetched {len(raw_emails)} emails")
+        raw = _fetch_raw_message(mail, mid)
+        if not raw:
+            continue
+        if use_local_from_filter:
+            sender = _from_address_from_raw(raw)
+            if sender not in target_senders:
+                skipped_sender += 1
+                continue
+        raw_emails.append(raw)
+        if unseen_only:
+            _mark_seen(mail, mid)
+        if len(raw_emails) >= max_emails:
+            break
+    if skipped_sender:
+        logger.info(f"  [{label}] skipped {skipped_sender} non-target sender email(s)")
+    logger.info(f"  [{label}] fetched {len(raw_emails)} target alert email(s)")
     return raw_emails
 
 
-def fetch_scholar_alerts(email_addr, app_password, since_days=7, label="INBOX", imap_server=None, max_emails=10, unseen_only=True):
+def fetch_scholar_alerts(email_addr, app_password, since_days=7, label="INBOX", imap_server=None, max_emails=10, unseen_only=True, max_scan_emails=500, target_senders=None):
     imap_server = imap_server or os.environ.get("IMAP_SERVER", "imap.163.com")
+    target_senders = target_senders or _target_alert_senders()
     mail = _imap_connect(imap_server, email_addr, app_password)
     since_date = (datetime.now(timezone.utc) - timedelta(days=since_days)).strftime("%d-%b-%Y")
 
@@ -305,15 +370,17 @@ def fetch_scholar_alerts(email_addr, app_password, since_days=7, label="INBOX", 
     labels = [l.strip() for l in label.split(",") if l.strip()]
     all_raw = []
     seen_ids = set()
-    remaining = max_emails
     for lbl in labels:
-        if remaining <= 0:
-            break
-        logger.info(f"Scanning folder: {lbl} (remaining quota: {remaining})")
-        raw_list = _fetch_from_folder(mail, lbl, since_date, max_emails=remaining, unseen_only=unseen_only)
+        logger.info(f"Scanning folder: {lbl} (quota per folder: {max_emails}, scan limit: {max_scan_emails})")
+        raw_list = _fetch_from_folder(
+            mail, lbl, since_date,
+            max_emails=max_emails,
+            unseen_only=unseen_only,
+            imap_server=imap_server,
+            max_scan_emails=max_scan_emails,
+            target_senders=target_senders,
+        )
         for raw in raw_list:
-            if remaining <= 0:
-                break
             # Deduplicate by Message-ID header
             try:
                 msg = email.message_from_bytes(raw)
@@ -325,9 +392,8 @@ def fetch_scholar_alerts(email_addr, app_password, since_days=7, label="INBOX", 
             except Exception:
                 pass
             all_raw.append(raw)
-            remaining -= 1
     mail.logout()
-    logger.info(f"Fetched {len(all_raw)} unique emails from {len(labels)} folder(s) (quota was {max_emails})")
+    logger.info(f"Fetched {len(all_raw)} unique emails from {len(labels)} folder(s) (quota was {max_emails} per folder)")
     return all_raw
 
 # ═══════════════════════════════════════════════════════════════
@@ -1930,6 +1996,7 @@ def main():
     parser.add_argument("--label", default=os.getenv("IMAP_LABEL", "INBOX"), help="IMAP folder/label to search (default: INBOX)")
     parser.add_argument("--since-days", type=int, default=int(os.getenv("SINCE_DAYS", "7")), help="Days to look back")
     parser.add_argument("--max-emails", type=int, default=int(os.getenv("MAX_EMAILS", "10")), help="Max emails to fetch per folder (default: 10)")
+    parser.add_argument("--max-scan-emails", type=int, default=int(os.getenv("MAX_SCAN_EMAILS", "500")), help="Max candidate emails to scan per folder before local sender filtering (default: 500)")
     parser.add_argument("--keep-unread", action="store_true", help="Don't mark emails as read (for testing)")
     parser.add_argument("--output-dir", default=os.getenv("OUTPUT_DIR", "/tmp"), help="Output directory")
     parser.add_argument("--json-input", default=None, help="Read papers from an existing JSON file instead of fetching email")
@@ -1978,7 +2045,15 @@ def main():
         # 1. Fetch emails
         logger.info("=" * 50)
         logger.info("Step 1: Fetching Scholar Alert emails...")
-        raw_emails = fetch_scholar_alerts(args.email, args.app_password, since_days=args.since_days, label=args.label, imap_server=args.imap_server, max_emails=args.max_emails, unseen_only=not args.keep_unread)
+        raw_emails = fetch_scholar_alerts(
+            args.email, args.app_password,
+            since_days=args.since_days,
+            label=args.label,
+            imap_server=args.imap_server,
+            max_emails=args.max_emails,
+            unseen_only=not args.keep_unread,
+            max_scan_emails=args.max_scan_emails,
+        )
 
         # 2. Parse papers
         logger.info("=" * 50)
