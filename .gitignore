@@ -12,6 +12,7 @@ papers_raw.json
 papers_translated.json
 scholar_alert_output.md
 scholar_alert_output.pdf
+*.pdf-safe.md
 
 # Python local artifacts
 __pycache__/

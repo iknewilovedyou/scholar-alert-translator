@@ -58,6 +58,7 @@ scholar-alert-translator/
 4. 可选通知配置
    - `NOTIFY_WEBHOOK`
    - `NOTIFY_COPY_TO`
+   - `SEND_FILE_CMD`：`run.sh` 完成后执行的文件发送命令，可用于小龙虾/OpenClaw/飞书文件投递
 
 ## 配置
 
@@ -112,6 +113,16 @@ python3 scripts/fetch-scholar-alerts.py --test --skip-pdf --output-dir /tmp/scho
 ```cron
 0 9 * * * cd /path/to/scholar-alert-translator && bash run.sh
 ```
+
+`run.sh` 会读取 `.env`，优先发送 `scholar_alert_output.pdf`。如果 PDF 生成失败但 Markdown 已生成，会自动改发 `scholar_alert_output.md`，并在 `cron.log` 里记录原因。
+
+如果服务器上有小龙虾/OpenClaw 的文件发送命令，可以在 `.env` 里配置：
+
+```env
+SEND_FILE_CMD='openclaw send-file "$DELIVER_FILE"'
+```
+
+其中 `DELIVER_FILE` 是本次要发送的文件路径。可用变量还包括 `PDF_FILE`、`MARKDOWN_FILE`、`JSON_FILE`、`RUN_STATUS`。
 
 ## 输出文件
 

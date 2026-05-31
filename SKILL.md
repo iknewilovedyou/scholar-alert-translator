@@ -101,6 +101,8 @@ PDF 生成后必须主动交付给用户：
 2. Feishu/Lark bot → 复制到 workspace 目录，通过 openclaw 发送
 3. 无文件上传能力 → 说明限制，提供本地路径
 
+定时任务使用 `run.sh` 时，脚本会读取 `.env`。如需自动发文件，在 `.env` 中配置 `SEND_FILE_CMD`，命令可使用 `DELIVER_FILE` 环境变量。`run.sh` 优先发送 PDF；如果 PDF 生成失败但 Markdown 已生成，则发送 Markdown 兜底并在 `cron.log` 记录原因。
+
 ## .env 配置项
 
 ```env
@@ -118,4 +120,7 @@ OPENAI_MODEL=Qwen/Qwen2.5-7B-Instruct
 # 可选：字体覆盖
 # PDF_MAIN_FONT=Microsoft YaHei
 # PDF_CJK_FONT=Microsoft YaHei
+
+# 可选：run.sh 完成后的文件发送命令
+# SEND_FILE_CMD='openclaw send-file "$DELIVER_FILE"'
 ```

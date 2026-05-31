@@ -80,20 +80,20 @@ def _check_environment():
     # LaTeX packages (only if kpsewhich is available)
     if shutil.which("kpsewhich"):
         for sty in _REQUIRED_TEX_PACKAGES:
-            result = subprocess.run(["kpsewhich", sty], capture_output=True, text=True, timeout=5)
+            result = subprocess.run(["kpsewhich", sty], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
             if not result.stdout.strip():
                 errors.append(f"LaTeX 宏包缺失: {sty}（texlive-latex-extra）")
 
     # Fonts (only if fc-match is available)
     if shutil.which("fc-match"):
         en_ok = any(
-            subprocess.run(["fc-match", "-s", f], capture_output=True, text=True, timeout=5).returncode == 0
+            subprocess.run(["fc-match", "-s", f], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5).returncode == 0
             for f in _MIN_FONTS_EN
         )
         if not en_ok:
             warnings.append("未检测到英文衬线字体（TeX Gyre Termes / Times New Roman 等）")
         cjk_ok = any(
-            subprocess.run(["fc-match", "-s", f], capture_output=True, text=True, timeout=5).returncode == 0
+            subprocess.run(["fc-match", "-s", f], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5).returncode == 0
             for f in _MIN_FONTS_CJK
         )
         if not cjk_ok:
@@ -1323,6 +1323,11 @@ def _has_broken_latex_commands(text):
     return False
 
 
+def _has_latex_commands(text):
+    """Detect raw LaTeX commands that would break when left outside math mode."""
+    return bool(re.search(r'\\[a-zA-Z]+', text or ""))
+
+
 def _degrade_to_plain(text):
     """Convert a broken LaTeX fragment to readable plain text."""
     # Step 0: Rewrite structural commands (\frac, \sqrt) with regex
@@ -1371,7 +1376,13 @@ def normalize_math_text(text):
     # Then $...$ (not $$)
     text = re.sub(r'(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)', _store_match, text)
 
-    # Step 3: Check remaining text for broken math indicators
+    # Step 3: Degrade raw LaTeX commands left outside math spans. Pandoc passes
+    # many raw TeX commands through to XeLaTeX; commands like \alpha outside
+    # $...$ are a common source of "Missing $ inserted".
+    if _has_latex_commands(text):
+        text = _degrade_to_plain(text)
+
+    # Step 4: Check remaining text for broken math indicators
     # A lone $ that wasn't matched = unpaired delimiter
     if '$' in text:
         # Degradation mode: put placeholders back without $, convert all
@@ -1390,7 +1401,7 @@ def normalize_math_text(text):
         text = _degrade_to_plain(text) if _has_broken_latex_commands(text) else text
         return re.sub(r'\s+', ' ', text).strip()
 
-    # Step 4: Check placeholders for broken LaTeX
+    # Step 5: Check placeholders for broken LaTeX
     final_text = text
     for key, val in placeholders:
         inner = val.strip('$').strip()
@@ -1400,17 +1411,13 @@ def normalize_math_text(text):
         else:
             final_text = final_text.replace(key, val)
 
-    # Step 5: Any remaining broken LaTeX outside formulas?
-    if _has_broken_latex_commands(final_text):
-        # Check if it's only in placeholders (already handled) or in free text
-        # Remove placeholders temporarily to check
-        check = final_text
-        for key, _ in placeholders:
-            check = check.replace(key, '')
-        if _has_broken_latex_commands(check):
-            final_text = _degrade_to_plain(final_text)
+    # Step 6: Any remaining broken/raw LaTeX outside formulas?
+    check = re.sub(r'\$\$(.+?)\$\$', '', final_text, flags=re.DOTALL)
+    check = re.sub(r'(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)', '', check)
+    if _has_broken_latex_commands(check) or _has_latex_commands(check):
+        final_text = _degrade_to_plain(final_text)
 
-    # Step 6: Clean up any leftover placeholder markers (shouldn't happen)
+    # Step 7: Clean up any leftover placeholder markers (shouldn't happen)
     final_text = re.sub(r'\x00MATH\d+\x00', '', final_text)
 
     return re.sub(r'\s+', ' ', final_text).strip()
@@ -1530,7 +1537,7 @@ def _font_match_name(font_name):
     try:
         r = subprocess.run(
             ["fc-match", "-f", "%{family}\n", font_name],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
         )
         if r.returncode != 0 or not (r.stdout or "").strip():
             return None
@@ -1578,7 +1585,7 @@ def _tex_font_file(font_name):
     }
     for filename in candidates.get(font_name, []):
         try:
-            r = subprocess.run(["kpsewhich", filename], capture_output=True, text=True, timeout=5)
+            r = subprocess.run(["kpsewhich", filename], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
             if r.returncode == 0 and (r.stdout or "").strip():
                 return filename
         except Exception:
@@ -1602,7 +1609,7 @@ def _select_math_font():
         # Also allow users to set a direct .otf filename known to TeX.
         if forced.lower().endswith(".otf"):
             try:
-                r = subprocess.run(["kpsewhich", forced], capture_output=True, text=True, timeout=5)
+                r = subprocess.run(["kpsewhich", forced], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
                 if r.returncode == 0 and (r.stdout or "").strip():
                     return forced
             except Exception:
@@ -1742,6 +1749,26 @@ def validate_pdf_links(pdf_path, expected_links=None):
         return links, f"PDF has only {links} clickable link(s), expected at least {expected_links}"
     return links, None
 
+
+def _write_pdf_safe_markdown(md_path):
+    """Write a conservative Markdown copy for a second PDF attempt."""
+    safe_path = os.path.splitext(md_path)[0] + ".pdf-safe.md"
+    with open(md_path, encoding="utf-8") as f:
+        lines = f.readlines()
+
+    safe_lines = []
+    for line in lines:
+        if line.startswith("[paper-"):
+            safe_lines.append(line)
+            continue
+        safe_lines.append(normalize_math_text(line.rstrip("\n")) + "\n")
+
+    with open(safe_path, "w", encoding="utf-8") as f:
+        f.writelines(safe_lines)
+    logger.warning(f"Wrote PDF-safe Markdown fallback: {safe_path}")
+    return safe_path
+
+
 def convert_markdown_to_pdf(md_path, pdf_path):
     """Convert Markdown to PDF using one fixed visual style.
 
@@ -1790,11 +1817,23 @@ def convert_markdown_to_pdf(md_path, pdf_path):
         cmd.insert(cmd.index("--standalone") + 1, "--lua-filter=" + lua_filter)
     if math_font:
         cmd.extend(["-V", f"mathfont={math_font}"])
-    logger.info(f"Running fixed PDF style {FIXED_PDF_STYLE_VERSION}: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+
+    def _run_pandoc(input_md):
+        run_cmd = list(cmd)
+        run_cmd[1] = input_md
+        logger.info(f"Running fixed PDF style {FIXED_PDF_STYLE_VERSION}: {' '.join(run_cmd)}")
+        return subprocess.run(run_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+
+    result = _run_pandoc(md_path)
     if result.returncode != 0:
         logger.error(f"pandoc failed (rc={result.returncode}): {result.stderr[:1500]}")
-        return None
+        if "Missing $ inserted" in result.stderr or "LaTeX Error" in result.stderr:
+            safe_md_path = _write_pdf_safe_markdown(md_path)
+            logger.warning("Retrying PDF generation with conservative Markdown sanitization")
+            result = _run_pandoc(safe_md_path)
+        if result.returncode != 0:
+            logger.error(f"pandoc retry failed (rc={result.returncode}): {result.stderr[:1500]}")
+            return None
     if not os.path.isfile(pdf_path):
         logger.error(f"PDF not created: {pdf_path}")
         return None
@@ -2012,19 +2051,21 @@ def main():
         logger.info("=" * 50)
         logger.info("Step 9: Converting Markdown to PDF...")
         result = convert_markdown_to_pdf(md_path, pdf_path)
-        if result:
-            # 10. Validate PDF
-            if os.path.getsize(pdf_path) < 1000:
-                logger.error(f"PDF suspiciously small ({os.path.getsize(pdf_path)} bytes)")
-            else:
-                # 11. Validate PDF links
-                links_count, err = validate_pdf_links(pdf_path, expected_links=len(papers))
-                if err and links_count == -1:
-                    logger.warning(err)
-                elif err:
-                    logger.error(f"PDF validation failed: {err}")
-                else:
-                    logger.info(f"PDF OK ({os.path.getsize(pdf_path)} bytes, {links_count} clickable links)")
+        if not result:
+            raise SystemExit(1)
+        # 10. Validate PDF
+        if os.path.getsize(pdf_path) < 1000:
+            logger.error(f"PDF suspiciously small ({os.path.getsize(pdf_path)} bytes)")
+            raise SystemExit(1)
+        # 11. Validate PDF links
+        links_count, err = validate_pdf_links(pdf_path, expected_links=len(papers))
+        if err and links_count == -1:
+            logger.warning(err)
+        elif err:
+            logger.error(f"PDF validation failed: {err}")
+            raise SystemExit(1)
+        else:
+            logger.info(f"PDF OK ({os.path.getsize(pdf_path)} bytes, {links_count} clickable links)")
 
     # Print final output paths
     logger.info("=" * 50)
